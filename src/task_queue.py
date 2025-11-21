@@ -24,13 +24,16 @@ class TaskQueue:
         self.max_parallel = max_parallel
         self.semaphore = asyncio.Semaphore(max_parallel)
 
-        # Track active tasks
+        # Track active tasks (protected by lock)
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.task_results: Dict[str, TaskResult] = {}
         self.task_start_times: Dict[str, datetime] = {}
 
         # Track tasks per directory (for worktree coordination)
         self.tasks_per_directory: Dict[str, Set[str]] = {}
+
+        # Lock for thread-safe dictionary access
+        self._lock = asyncio.Lock()
 
     async def submit_task(self, task: Task) -> str:
         """Submit a task for execution.
@@ -42,17 +45,19 @@ class TaskQueue:
             Task ID
         """
         logger.info(f"Submitting task {task.id} to queue")
-        logger.debug(f"Current active tasks: {len(self.active_tasks)}/{self.max_parallel}")
 
-        # Track directory usage
-        if task.working_directory not in self.tasks_per_directory:
-            self.tasks_per_directory[task.working_directory] = set()
-        self.tasks_per_directory[task.working_directory].add(task.id)
+        async with self._lock:
+            logger.debug(f"Current active tasks: {len(self.active_tasks)}/{self.max_parallel}")
 
-        # Create async task
-        async_task = asyncio.create_task(self._execute_task(task))
-        self.active_tasks[task.id] = async_task
-        self.task_start_times[task.id] = datetime.now()
+            # Track directory usage
+            if task.working_directory not in self.tasks_per_directory:
+                self.tasks_per_directory[task.working_directory] = set()
+            self.tasks_per_directory[task.working_directory].add(task.id)
+
+            # Create async task
+            async_task = asyncio.create_task(self._execute_task(task))
+            self.active_tasks[task.id] = async_task
+            self.task_start_times[task.id] = datetime.now()
 
         return task.id
 
@@ -69,7 +74,8 @@ class TaskQueue:
             logger.info(f"Starting execution of task {task.id}")
             try:
                 result = await self.orchestrator.execute_task(task)
-                self.task_results[task.id] = result
+                async with self._lock:
+                    self.task_results[task.id] = result
                 logger.info(f"Task {task.id} completed with status: {result.status}")
                 return result
             except Exception as e:
@@ -79,20 +85,22 @@ class TaskQueue:
                     status=TaskStatus.FAILED,
                     error=str(e),
                 )
-                self.task_results[task.id] = result
+                async with self._lock:
+                    self.task_results[task.id] = result
                 return result
             finally:
-                # Cleanup
-                if task.id in self.active_tasks:
-                    del self.active_tasks[task.id]
-                if task.id in self.task_start_times:
-                    del self.task_start_times[task.id]
+                # Cleanup with lock protection
+                async with self._lock:
+                    if task.id in self.active_tasks:
+                        del self.active_tasks[task.id]
+                    if task.id in self.task_start_times:
+                        del self.task_start_times[task.id]
 
-                # Remove from directory tracking
-                if task.working_directory in self.tasks_per_directory:
-                    self.tasks_per_directory[task.working_directory].discard(task.id)
-                    if not self.tasks_per_directory[task.working_directory]:
-                        del self.tasks_per_directory[task.working_directory]
+                    # Remove from directory tracking
+                    if task.working_directory in self.tasks_per_directory:
+                        self.tasks_per_directory[task.working_directory].discard(task.id)
+                        if not self.tasks_per_directory[task.working_directory]:
+                            del self.tasks_per_directory[task.working_directory]
 
     async def get_task_result(self, task_id: str) -> Optional[TaskResult]:
         """Get result for a task.
@@ -103,15 +111,16 @@ class TaskQueue:
         Returns:
             TaskResult if available, None if still running
         """
-        if task_id in self.task_results:
-            return self.task_results[task_id]
+        async with self._lock:
+            if task_id in self.task_results:
+                return self.task_results[task_id]
 
-        if task_id in self.active_tasks:
-            # Task still running
-            return None
+            if task_id in self.active_tasks:
+                # Task still running
+                return None
 
-        # Task not found
-        raise ValueError(f"Task {task_id} not found")
+            # Task not found
+            raise ValueError(f"Task {task_id} not found")
 
     async def wait_for_task(self, task_id: str, timeout: Optional[float] = None) -> TaskResult:
         """Wait for a task to complete.
@@ -127,28 +136,35 @@ class TaskQueue:
             asyncio.TimeoutError: If timeout is reached
             ValueError: If task not found
         """
-        if task_id not in self.active_tasks:
-            # Check if already completed
-            if task_id in self.task_results:
-                return self.task_results[task_id]
-            raise ValueError(f"Task {task_id} not found")
+        # Get task reference with lock
+        async with self._lock:
+            if task_id not in self.active_tasks:
+                # Check if already completed
+                if task_id in self.task_results:
+                    return self.task_results[task_id]
+                raise ValueError(f"Task {task_id} not found")
+            task_ref = self.active_tasks[task_id]
 
+        # Wait without holding lock
         if timeout:
-            await asyncio.wait_for(self.active_tasks[task_id], timeout=timeout)
+            await asyncio.wait_for(task_ref, timeout=timeout)
         else:
-            await self.active_tasks[task_id]
+            await task_ref
 
-        return self.task_results[task_id]
+        # Get result with lock
+        async with self._lock:
+            return self.task_results[task_id]
 
-    def get_active_task_count(self) -> int:
+    async def get_active_task_count(self) -> int:
         """Get number of active tasks.
 
         Returns:
             Number of active tasks
         """
-        return len(self.active_tasks)
+        async with self._lock:
+            return len(self.active_tasks)
 
-    def get_directory_task_count(self, directory: str) -> int:
+    async def get_directory_task_count(self, directory: str) -> int:
         """Get number of active tasks for a directory.
 
         Args:
@@ -157,23 +173,25 @@ class TaskQueue:
         Returns:
             Number of active tasks for directory
         """
-        return len(self.tasks_per_directory.get(directory, set()))
+        async with self._lock:
+            return len(self.tasks_per_directory.get(directory, set()))
 
-    def get_status(self) -> dict:
+    async def get_status(self) -> dict:
         """Get queue status.
 
         Returns:
             Status dictionary with active tasks, results, etc.
         """
-        return {
-            "max_parallel": self.max_parallel,
-            "active_tasks": len(self.active_tasks),
-            "completed_tasks": len(self.task_results),
-            "tasks_by_directory": {
-                dir: len(tasks) for dir, tasks in self.tasks_per_directory.items()
-            },
-            "active_task_ids": list(self.active_tasks.keys()),
-        }
+        async with self._lock:
+            return {
+                "max_parallel": self.max_parallel,
+                "active_tasks": len(self.active_tasks),
+                "completed_tasks": len(self.task_results),
+                "tasks_by_directory": {
+                    dir: len(tasks) for dir, tasks in self.tasks_per_directory.items()
+                },
+                "active_task_ids": list(self.active_tasks.keys()),
+            }
 
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a running task.
@@ -184,14 +202,16 @@ class TaskQueue:
         Returns:
             True if cancelled, False if not found or already completed
         """
-        if task_id not in self.active_tasks:
-            return False
+        async with self._lock:
+            if task_id not in self.active_tasks:
+                return False
 
-        logger.info(f"Cancelling task {task_id}")
-        self.active_tasks[task_id].cancel()
+            logger.info(f"Cancelling task {task_id}")
+            task_ref = self.active_tasks[task_id]
+            task_ref.cancel()
 
         try:
-            await self.active_tasks[task_id]
+            await task_ref
         except asyncio.CancelledError:
             logger.info(f"Task {task_id} cancelled successfully")
 
@@ -199,7 +219,11 @@ class TaskQueue:
 
     async def cancel_all(self) -> None:
         """Cancel all running tasks."""
-        logger.info(f"Cancelling all {len(self.active_tasks)} active tasks")
+        async with self._lock:
+            active_count = len(self.active_tasks)
+            task_ids = list(self.active_tasks.keys())
 
-        for task_id in list(self.active_tasks.keys()):
+        logger.info(f"Cancelling all {active_count} active tasks")
+
+        for task_id in task_ids:
             await self.cancel_task(task_id)

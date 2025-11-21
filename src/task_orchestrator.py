@@ -81,22 +81,27 @@ class TaskOrchestrator:
             # Step 2: Create branch or worktree
             original_branch = await self.git_manager.get_current_branch(task.working_directory)
 
-            if await self.git_manager.branch_exists(task.working_directory, task.branch_name):
-                return TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.FAILED,
-                    error=f"Branch already exists: {task.branch_name}",
-                    elapsed_time=time.time() - start_time,
-                )
+            # Only check branch existence if NOT using worktrees
+            # Worktrees can create the branch even if it exists in other worktrees
+            if not self.use_worktrees:
+                if await self.git_manager.branch_exists(task.working_directory, task.branch_name):
+                    return TaskResult(
+                        task_id=task.id,
+                        status=TaskStatus.FAILED,
+                        error=f"Branch already exists: {task.branch_name}",
+                        elapsed_time=time.time() - start_time,
+                    )
 
             if self.use_worktrees:
                 # Use worktree for parallel work
                 import os
+                # Add task ID to prevent path collisions (e.g., "feature/test" vs "feature_test")
+                safe_branch_name = task.branch_name.replace("/", "_")
                 worktree_path = os.path.join(
                     task.working_directory,
                     ".git",
                     "worktrees_nomad",
-                    task.branch_name.replace("/", "_")
+                    f"{safe_branch_name}_{task.id}"
                 )
                 await self.git_manager.create_worktree(
                     task.working_directory,

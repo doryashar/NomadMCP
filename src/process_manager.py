@@ -96,6 +96,11 @@ class ProcessManager:
             # Check if process has terminated
             if process.returncode is not None:
                 stderr = await process.stderr.read()
+                # Close streams before raising
+                if process.stdout:
+                    process.stdout.close()
+                if process.stderr:
+                    process.stderr.close()
                 raise RuntimeError(f"OpenCode server failed to start: {stderr.decode()}")
 
             # Try to read a line from stdout
@@ -111,8 +116,21 @@ class ProcessManager:
             except asyncio.TimeoutError:
                 continue
 
-        # Timeout reached
+        # Timeout reached - cleanup process properly
         process.kill()
+        try:
+            # Wait for process to actually die (max 2 seconds)
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            # Process still alive after SIGKILL, something is very wrong
+            pass
+        finally:
+            # Close streams to free resources
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
         raise RuntimeError(f"Timeout waiting for OpenCode server to start ({timeout}s)")
 
     async def kill_server(self, pid: int) -> None:

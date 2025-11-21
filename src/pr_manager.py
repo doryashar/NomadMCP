@@ -90,7 +90,15 @@ class PRManager:
             cwd=working_dir,
         )
 
-        pr_data = json.loads(output)
+        # Validate output
+        if not output or not output.strip():
+            raise RuntimeError(f"Empty response from gh pr view for PR #{pr_number}")
+
+        # Parse JSON with error handling
+        try:
+            pr_data = json.loads(output)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse PR data: {e}. Output was: {output[:100]}")
 
         # Get PR comments
         comments = await PRManager.get_pr_comments(pr_number, working_dir)
@@ -137,18 +145,22 @@ class PRManager:
                 "comments",
                 cwd=working_dir,
             )
-            data = json.loads(output)
 
-            for comment in data.get("comments", []):
-                comments.append(
-                    PRComment(
-                        author=comment.get("author", {}).get("login", "unknown"),
-                        body=comment.get("body", ""),
-                        created_at=comment.get("createdAt", ""),
+            # Only parse if output is not empty
+            if output and output.strip():
+                data = json.loads(output)
+                for comment in data.get("comments", []):
+                    comments.append(
+                        PRComment(
+                            author=comment.get("author", {}).get("login", "unknown"),
+                            body=comment.get("body", ""),
+                            created_at=comment.get("createdAt", ""),
+                        )
                     )
-                )
+        except json.JSONDecodeError:
+            pass  # Best effort - skip if JSON is malformed
         except Exception:
-            pass  # Best effort
+            pass  # Best effort - skip on any other error
 
         try:
             # Get review comments
@@ -157,20 +169,24 @@ class PRManager:
                 f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
                 cwd=working_dir,
             )
-            review_comments = json.loads(output)
 
-            for comment in review_comments:
-                comments.append(
-                    PRComment(
-                        author=comment.get("user", {}).get("login", "unknown"),
-                        body=comment.get("body", ""),
-                        path=comment.get("path"),
-                        line=comment.get("line"),
-                        created_at=comment.get("created_at", ""),
+            # Only parse if output is not empty
+            if output and output.strip():
+                review_comments = json.loads(output)
+                for comment in review_comments:
+                    comments.append(
+                        PRComment(
+                            author=comment.get("user", {}).get("login", "unknown"),
+                            body=comment.get("body", ""),
+                            path=comment.get("path"),
+                            line=comment.get("line"),
+                            created_at=comment.get("created_at", ""),
+                        )
                     )
-                )
+        except json.JSONDecodeError:
+            pass  # Best effort - skip if JSON is malformed
         except Exception:
-            pass  # Best effort
+            pass  # Best effort - skip on any other error
 
         return comments
 

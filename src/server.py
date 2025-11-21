@@ -182,10 +182,31 @@ class NomadMCPServer:
             logger.info(f"Submitting task: {task_id} to queue")
             await self.task_queue.submit_task(task)
 
-            # Wait for task to complete
-            logger.info(f"Waiting for task {task_id} to complete")
-            result = await self.task_queue.wait_for_task(task_id)
-            logger.info(f"Task {task_id} completed with status: {result.status}")
+            # Wait for task to complete with timeout
+            # Add 10 minute buffer to task timeout to allow for cleanup
+            mcp_timeout = (timeout_minutes + 10) * 60
+            logger.info(f"Waiting for task {task_id} to complete (timeout: {mcp_timeout}s)")
+
+            try:
+                result = await self.task_queue.wait_for_task(task_id, timeout=mcp_timeout)
+                logger.info(f"Task {task_id} completed with status: {result.status}")
+            except asyncio.TimeoutError:
+                logger.error(f"MCP tool call timed out for task {task_id} after {mcp_timeout}s")
+                # Cancel the task
+                await self.task_queue.cancel_task(task_id)
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"""✗ MCP tool call timed out
+
+Task ID: {task_id}
+Branch: {branch_name}
+Timeout: {mcp_timeout}s
+
+The task did not complete within the MCP timeout period. The task has been cancelled.
+This may indicate a problem with the OpenCode server or the task itself."""
+                    )
+                ]
 
             # Format response
             if result.status.value == "completed":

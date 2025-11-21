@@ -1,6 +1,7 @@
 """Git repository operations manager."""
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 import git
@@ -9,6 +10,59 @@ from git.exc import GitCommandError, InvalidGitRepositoryError
 
 class GitManager:
     """Manages git operations for task branches."""
+
+    @staticmethod
+    def _validate_branch_name(branch_name: str) -> None:
+        """Validate branch name for safe use in commands.
+
+        Args:
+            branch_name: Branch name to validate
+
+        Raises:
+            ValueError: If branch name is invalid or potentially dangerous
+        """
+        if not branch_name:
+            raise ValueError("Branch name cannot be empty")
+
+        # Check for potentially dangerous characters
+        # Allow: alphanumeric, /, -, _, .
+        if not re.match(r'^[a-zA-Z0-9/_.-]+$', branch_name):
+            raise ValueError(
+                f"Invalid branch name: '{branch_name}'. "
+                "Branch names can only contain alphanumeric characters, /, -, _, and ."
+            )
+
+        # Additional git branch name rules
+        if branch_name.startswith("/") or branch_name.endswith("/"):
+            raise ValueError("Branch name cannot start or end with /")
+
+        if branch_name.startswith(".") or branch_name.endswith("."):
+            raise ValueError("Branch name cannot start or end with .")
+
+        if ".." in branch_name:
+            raise ValueError("Branch name cannot contain consecutive dots (..)")
+
+        if "//" in branch_name:
+            raise ValueError("Branch name cannot contain consecutive slashes (//)")
+
+    @staticmethod
+    def _validate_path(path: str) -> None:
+        """Validate path for safe use in commands.
+
+        Args:
+            path: Path to validate
+
+        Raises:
+            ValueError: If path is invalid or potentially dangerous
+        """
+        if not path:
+            raise ValueError("Path cannot be empty")
+
+        # Check for shell metacharacters and other dangerous patterns
+        dangerous_chars = [';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r']
+        for char in dangerous_chars:
+            if char in path:
+                raise ValueError(f"Path contains dangerous character: {char}")
 
     @staticmethod
     async def is_git_repo(directory: str) -> bool:
@@ -67,8 +121,13 @@ class GitManager:
             from_branch: Base branch (defaults to current branch)
 
         Raises:
-            ValueError: If branch already exists
+            ValueError: If branch already exists or validation fails
         """
+        # Validate inputs
+        GitManager._validate_branch_name(branch_name)
+        if from_branch:
+            GitManager._validate_branch_name(from_branch)
+
         repo = await GitManager.get_repo(directory)
 
         # Check if branch already exists
@@ -97,8 +156,11 @@ class GitManager:
             force: Force delete even if not merged
 
         Raises:
-            ValueError: If branch doesn't exist or is current branch
+            ValueError: If branch doesn't exist or is current branch or validation fails
         """
+        # Validate input
+        GitManager._validate_branch_name(branch_name)
+
         repo = await GitManager.get_repo(directory)
 
         # Check if branch exists
@@ -121,8 +183,11 @@ class GitManager:
             branch_name: Name of branch to checkout
 
         Raises:
-            ValueError: If branch doesn't exist
+            ValueError: If branch doesn't exist or validation fails
         """
+        # Validate input
+        GitManager._validate_branch_name(branch_name)
+
         repo = await GitManager.get_repo(directory)
 
         if branch_name not in repo.heads:
@@ -181,9 +246,15 @@ class GitManager:
             Path to created worktree
 
         Raises:
-            ValueError: If worktree creation fails
+            ValueError: If worktree creation fails or validation fails
         """
         import subprocess
+
+        # Validate inputs to prevent command injection
+        GitManager._validate_branch_name(branch_name)
+        GitManager._validate_path(worktree_path)
+        if from_branch:
+            GitManager._validate_branch_name(from_branch)
 
         repo = await GitManager.get_repo(directory)
 
@@ -195,14 +266,20 @@ class GitManager:
         else:
             cmd.extend(["-b", branch_name, worktree_path])
 
-        try:
-            result = subprocess.run(
+        # Run subprocess in thread pool to avoid blocking event loop
+        import asyncio
+
+        def _run_subprocess():
+            return subprocess.run(
                 cmd,
                 cwd=directory,
                 capture_output=True,
                 text=True,
                 check=True,
             )
+
+        try:
+            result = await asyncio.to_thread(_run_subprocess)
             return worktree_path
         except subprocess.CalledProcessError as e:
             raise ValueError(f"Failed to create worktree: {e.stderr}")
@@ -217,23 +294,32 @@ class GitManager:
             force: Force removal even with uncommitted changes
 
         Raises:
-            ValueError: If worktree removal fails
+            ValueError: If worktree removal fails or validation fails
         """
         import subprocess
+
+        # Validate inputs to prevent command injection
+        GitManager._validate_path(worktree_path)
 
         cmd = ["git", "worktree", "remove"]
         if force:
             cmd.append("--force")
         cmd.append(worktree_path)
 
-        try:
-            subprocess.run(
+        # Run subprocess in thread pool to avoid blocking event loop
+        import asyncio
+
+        def _run_subprocess():
+            return subprocess.run(
                 cmd,
                 cwd=directory,
                 capture_output=True,
                 text=True,
                 check=True,
             )
+
+        try:
+            await asyncio.to_thread(_run_subprocess)
         except subprocess.CalledProcessError as e:
             raise ValueError(f"Failed to remove worktree: {e.stderr}")
 
@@ -248,15 +334,20 @@ class GitManager:
             List of worktree info dicts with 'path', 'branch', 'commit'
         """
         import subprocess
+        import asyncio
 
-        try:
-            result = subprocess.run(
+        def _run_subprocess():
+            return subprocess.run(
                 ["git", "worktree", "list", "--porcelain"],
                 cwd=directory,
                 capture_output=True,
                 text=True,
                 check=True,
             )
+
+        try:
+            # Run subprocess in thread pool to avoid blocking event loop
+            result = await asyncio.to_thread(_run_subprocess)
 
             worktrees = []
             current = {}
