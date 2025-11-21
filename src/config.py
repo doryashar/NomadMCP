@@ -28,6 +28,15 @@ class TaskConfig(BaseModel):
 
     default_timeout_minutes: int = Field(default=60, description="Default task timeout in minutes")
     branch_prefix: str = Field(default="task", description="Prefix for auto-generated branch names")
+    max_parallel_tasks: int = Field(default=5, description="Maximum number of parallel tasks")
+    use_worktrees: bool = Field(
+        default=True,
+        description="Use git worktrees for parallel tasks on same directory"
+    )
+    persistence_file: Optional[str] = Field(
+        default=None,
+        description="Path to task persistence file (for recovery after restart)"
+    )
 
 
 class LoggingConfig(BaseModel):
@@ -71,6 +80,9 @@ class NomadMCPConfig(BaseModel):
             task=TaskConfig(
                 default_timeout_minutes=int(os.getenv("NOMAD_MCP_DEFAULT_TIMEOUT", "60")),
                 branch_prefix=os.getenv("NOMAD_MCP_BRANCH_PREFIX", "task"),
+                max_parallel_tasks=int(os.getenv("NOMAD_MCP_MAX_PARALLEL_TASKS", "5")),
+                use_worktrees=os.getenv("NOMAD_MCP_USE_WORKTREES", "true").lower() == "true",
+                persistence_file=os.getenv("NOMAD_MCP_PERSISTENCE_FILE"),
             ),
             logging=LoggingConfig(
                 level=os.getenv("NOMAD_MCP_LOG_LEVEL", "INFO"),

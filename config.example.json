@@ -10,7 +10,10 @@
   },
   "task": {
     "default_timeout_minutes": 60,
-    "branch_prefix": "task"
+    "branch_prefix": "task",
+    "max_parallel_tasks": 5,
+    "use_worktrees": true,
+    "persistence_file": null
   },
   "logging": {
     "level": "INFO",

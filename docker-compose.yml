@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  nomad-mcp:
+    build: .
+    container_name: nomad-mcp
+    volumes:
+      # Mount your code repositories here
+      - ${REPO_PATH:-./repos}:/repos
+      # Mount git config for authentication
+      - ~/.gitconfig:/root/.gitconfig:ro
+      - ~/.ssh:/root/.ssh:ro
+      # Mount GitHub CLI config
+      - ~/.config/gh:/root/.config/gh:ro
+      # Persist logs
+      - ./logs:/var/log/nomad-mcp
+      # Persist task data
+      - ./data:/var/lib/nomad-mcp
+    environment:
+      # Configuration via environment variables
+      - NOMAD_MCP_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - NOMAD_MCP_MAX_PARALLEL_TASKS=${MAX_PARALLEL_TASKS:-5}
+      - NOMAD_MCP_DEFAULT_TIMEOUT=${DEFAULT_TIMEOUT:-60}
+      - NOMAD_MCP_USE_WORKTREES=${USE_WORKTREES:-true}
+      - NOMAD_MCP_BRANCH_PREFIX=${BRANCH_PREFIX:-task}
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Optional: Development container with hot reload
+  nomad-mcp-dev:
+    build: .
+    container_name: nomad-mcp-dev
+    profiles:
+      - dev
+    volumes:
+      # Mount source code for development
+      - .:/app
+      # Mount repos
+      - ${REPO_PATH:-./repos}:/repos
+      # Mount credentials
+      - ~/.gitconfig:/root/.gitconfig:ro
+      - ~/.ssh:/root/.ssh:ro
+      - ~/.config/gh:/root/.config/gh:ro
+      # Persist logs and data
+      - ./logs:/var/log/nomad-mcp
+      - ./data:/var/lib/nomad-mcp
+    environment:
+      - NOMAD_MCP_LOG_LEVEL=DEBUG
+      - NOMAD_MCP_MAX_PARALLEL_TASKS=3
+      - NOMAD_MCP_DEFAULT_TIMEOUT=30
+    stdin_open: true
+    tty: true
+    command: python -m src.server

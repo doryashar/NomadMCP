@@ -22,6 +22,7 @@ class TaskOrchestrator:
         client_manager: ClientManager,
         session_manager: SessionManager,
         pr_manager: PRManager,
+        use_worktrees: bool = True,
     ):
         """Initialize task orchestrator.
 
@@ -31,12 +32,14 @@ class TaskOrchestrator:
             client_manager: ClientManager instance
             session_manager: SessionManager instance
             pr_manager: PRManager instance
+            use_worktrees: Use git worktrees for parallel tasks (default: True)
         """
         self.git_manager = git_manager
         self.process_manager = process_manager
         self.client_manager = client_manager
         self.session_manager = session_manager
         self.pr_manager = pr_manager
+        self.use_worktrees = use_worktrees
 
     async def execute_task(self, task: Task) -> TaskResult:
         """Execute a task with full workflow.
@@ -62,6 +65,8 @@ class TaskOrchestrator:
         iterations = 0
         session_id = None
         server_pid = None
+        worktree_path = None
+        working_dir = task.working_directory
 
         try:
             # Step 1: Validate git repository
@@ -73,7 +78,7 @@ class TaskOrchestrator:
                     elapsed_time=time.time() - start_time,
                 )
 
-            # Step 2: Create branch
+            # Step 2: Create branch or worktree
             original_branch = await self.git_manager.get_current_branch(task.working_directory)
 
             if await self.git_manager.branch_exists(task.working_directory, task.branch_name):
@@ -84,10 +89,27 @@ class TaskOrchestrator:
                     elapsed_time=time.time() - start_time,
                 )
 
-            await self.git_manager.create_branch(task.working_directory, task.branch_name)
+            if self.use_worktrees:
+                # Use worktree for parallel work
+                import os
+                worktree_path = os.path.join(
+                    task.working_directory,
+                    ".git",
+                    "worktrees_nomad",
+                    task.branch_name.replace("/", "_")
+                )
+                await self.git_manager.create_worktree(
+                    task.working_directory,
+                    task.branch_name,
+                    worktree_path,
+                )
+                working_dir = worktree_path
+            else:
+                # Use regular branch
+                await self.git_manager.create_branch(task.working_directory, task.branch_name)
 
             # Step 3: Start OpenCode server
-            process_info = await self.process_manager.spawn_server(task.working_directory)
+            process_info = await self.process_manager.spawn_server(working_dir)
             server_pid = process_info.pid
 
             # Create client
@@ -142,9 +164,17 @@ class TaskOrchestrator:
 
             # Step 9: Cleanup on success
             if result.status == TaskStatus.COMPLETED:
-                # Delete the branch
-                await self.git_manager.checkout_branch(task.working_directory, original_branch)
-                await self.git_manager.delete_branch(task.working_directory, task.branch_name)
+                if self.use_worktrees and worktree_path:
+                    # Remove worktree
+                    await self.git_manager.remove_worktree(
+                        task.working_directory,
+                        worktree_path,
+                        force=True
+                    )
+                else:
+                    # Delete the branch
+                    await self.git_manager.checkout_branch(task.working_directory, original_branch)
+                    await self.git_manager.delete_branch(task.working_directory, task.branch_name)
 
             result.elapsed_time = time.time() - start_time
             return result
@@ -160,6 +190,16 @@ class TaskOrchestrator:
             if server_pid:
                 try:
                     await self.process_manager.kill_server(server_pid)
+                except Exception:
+                    pass
+
+            if self.use_worktrees and worktree_path:
+                try:
+                    await self.git_manager.remove_worktree(
+                        task.working_directory,
+                        worktree_path,
+                        force=True
+                    )
                 except Exception:
                     pass
 

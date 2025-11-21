@@ -13,6 +13,7 @@ from .client_manager import ClientManager
 from .session_manager import SessionManager
 from .pr_manager import PRManager
 from .task_orchestrator import TaskOrchestrator
+from .task_queue import TaskQueue
 from .config import get_config
 from .logging_config import setup_logging, get_logger
 
@@ -52,7 +53,17 @@ class NomadMCPServer:
             client_manager=self.client_manager,
             session_manager=self.session_manager,
             pr_manager=self.pr_manager,
+            use_worktrees=self.config.task.use_worktrees,
         )
+
+        # Initialize task queue
+        self.task_queue = TaskQueue(
+            orchestrator=self.orchestrator,
+            max_parallel=self.config.task.max_parallel_tasks,
+        )
+
+        logger.info(f"Task queue initialized with max_parallel={self.config.task.max_parallel_tasks}")
+        logger.info(f"Using worktrees: {self.config.task.use_worktrees}")
 
         # Register handlers
         self._register_handlers()
@@ -98,7 +109,7 @@ class NomadMCPServer:
                             },
                             "working_directory": {
                                 "type": "string",
-                                "description": "Path to the git repository (absolute path)",
+                                "description": "Path to the git repository (absolute path). Defaults to current directory if not provided.",
                             },
                             "branch_name": {
                                 "type": "string",
@@ -112,7 +123,7 @@ class NomadMCPServer:
                                 "default": 60,
                             },
                         },
-                        "required": ["task_description", "working_directory"],
+                        "required": ["task_description"],
                     },
                 )
             ]
@@ -132,8 +143,9 @@ class NomadMCPServer:
             branch_name = arguments.get("branch_name")
             timeout_minutes = arguments.get("timeout_minutes", self.config.task.default_timeout_minutes)
 
-            if not task_description or not working_directory:
-                error_msg = "Error: task_description and working_directory are required"
+            # Validate task description
+            if not task_description:
+                error_msg = "Error: task_description is required"
                 logger.error(error_msg)
                 return [
                     TextContent(
@@ -141,6 +153,12 @@ class NomadMCPServer:
                         text=error_msg,
                     )
                 ]
+
+            # Default working directory to current directory
+            if not working_directory:
+                import os
+                working_directory = os.getcwd()
+                logger.info(f"Using current directory as working directory: {working_directory}")
 
             # Generate branch name if not provided
             if not branch_name:
@@ -160,9 +178,13 @@ class NomadMCPServer:
                 timeout_minutes=timeout_minutes,
             )
 
-            # Execute task
-            logger.info(f"Executing task: {task_id}")
-            result = await self.orchestrator.execute_task(task)
+            # Submit task to queue
+            logger.info(f"Submitting task: {task_id} to queue")
+            await self.task_queue.submit_task(task)
+
+            # Wait for task to complete
+            logger.info(f"Waiting for task {task_id} to complete")
+            result = await self.task_queue.wait_for_task(task_id)
             logger.info(f"Task {task_id} completed with status: {result.status}")
 
             # Format response

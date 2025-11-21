@@ -34,6 +34,7 @@ setup(
     entry_points={
         "console_scripts": [
             "nomad-mcp=src.server:main",
+            "nomad-cli=src.cli:main",
         ],
     },
 )
