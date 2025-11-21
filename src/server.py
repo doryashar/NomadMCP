@@ -13,6 +13,10 @@ from .client_manager import ClientManager
 from .session_manager import SessionManager
 from .pr_manager import PRManager
 from .task_orchestrator import TaskOrchestrator
+from .config import get_config
+from .logging_config import setup_logging, get_logger
+
+logger = get_logger(__name__)
 
 
 class NomadMCPServer:
@@ -20,6 +24,18 @@ class NomadMCPServer:
 
     def __init__(self):
         """Initialize the MCP server."""
+        # Load configuration
+        self.config = get_config()
+
+        # Setup logging
+        setup_logging(
+            level=self.config.logging.level,
+            log_file=self.config.logging.log_file,
+        )
+
+        logger.info("Initializing NomadMCP server")
+        logger.debug(f"Configuration: {self.config.model_dump()}")
+
         self.app = Server("nomad-mcp")
 
         # Initialize managers
@@ -40,6 +56,8 @@ class NomadMCPServer:
 
         # Register handlers
         self._register_handlers()
+
+        logger.info("NomadMCP server initialized successfully")
 
     def _register_handlers(self) -> None:
         """Register MCP protocol handlers."""
@@ -105,26 +123,33 @@ class NomadMCPServer:
             if name != "execute_task":
                 raise ValueError(f"Unknown tool: {name}")
 
+            logger.info(f"Received tool call: {name}")
+            logger.debug(f"Arguments: {arguments}")
+
             # Extract arguments
             task_description = arguments.get("task_description")
             working_directory = arguments.get("working_directory")
             branch_name = arguments.get("branch_name")
-            timeout_minutes = arguments.get("timeout_minutes", 60)
+            timeout_minutes = arguments.get("timeout_minutes", self.config.task.default_timeout_minutes)
 
             if not task_description or not working_directory:
+                error_msg = "Error: task_description and working_directory are required"
+                logger.error(error_msg)
                 return [
                     TextContent(
                         type="text",
-                        text="Error: task_description and working_directory are required",
+                        text=error_msg,
                     )
                 ]
 
             # Generate branch name if not provided
             if not branch_name:
                 task_id = str(uuid.uuid4())[:8]
-                branch_name = f"task/{task_id}"
+                branch_name = f"{self.config.task.branch_prefix}/{task_id}"
             else:
                 task_id = branch_name
+
+            logger.info(f"Creating task: {task_id} in {working_directory} on branch {branch_name}")
 
             # Create task
             task = Task(
@@ -136,7 +161,9 @@ class NomadMCPServer:
             )
 
             # Execute task
+            logger.info(f"Executing task: {task_id}")
             result = await self.orchestrator.execute_task(task)
+            logger.info(f"Task {task_id} completed with status: {result.status}")
 
             # Format response
             if result.status.value == "completed":
