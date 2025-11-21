@@ -1,31 +1,40 @@
 # NomadMCP
 
-MCP server for automated task execution using OpenCode/CodeNomad with PR management and feedback loops.
+MCP server and CLI tool for automated task execution using OpenCode/CodeNomad with parallel execution, git worktrees, and PR management.
 
 ## Overview
 
-NomadMCP is an MCP (Model Context Protocol) server that automates coding tasks by:
+NomadMCP is an MCP (Model Context Protocol) server and CLI tool that automates coding tasks by:
 
-1. Creating a new git branch for each task
-2. Spawning an OpenCode server session
-3. Sending the task to an AI agent
-4. Waiting for the agent to create a pull request
-5. Polling the PR for review feedback
-6. Automatically iterating on feedback until the PR is merged
-7. Cleaning up the branch when complete
+1. Creating isolated workspaces for each task (git worktrees or branches)
+2. Spawning OpenCode server sessions
+3. Sending tasks to AI agents
+4. Waiting for agents to create pull requests
+5. Polling PRs for review feedback
+6. Automatically iterating on feedback until PRs are merged
+7. Cleaning up workspaces when complete
 
-Each task runs in its own isolated OpenCode session with a dedicated git branch, enabling parallel task execution without conflicts.
+### Key Features
+
+✨ **Parallel Task Execution** - Run multiple tasks simultaneously with configurable limits
+🌳 **Git Worktrees** - Use worktrees for true parallel work without conflicts
+🐳 **Docker Support** - Full containerization with Docker and Docker Compose
+🖥️ **CLI Tool** - Standalone CLI for running tasks and viewing progress in CodeNomad
+⚙️ **Flexible Configuration** - Configure via env vars, JSON files, or defaults
+🔄 **Automatic PR Iteration** - Continuously addresses review feedback until merge
 
 ## Architecture
 
-The server manages the complete lifecycle:
+The system manages the complete lifecycle with these components:
 
-- **GitManager**: Validates repositories, creates/deletes branches
+- **GitManager**: Repository validation, branch/worktree operations
 - **ProcessManager**: Spawns and manages OpenCode server processes
 - **ClientManager**: HTTP client for OpenCode API communication
 - **SessionManager**: Manages OpenCode session lifecycle
 - **PRManager**: GitHub PR operations via `gh` CLI
 - **TaskOrchestrator**: Coordinates the complete workflow
+- **TaskQueue**: Manages parallel execution with configurable limits
+- **CLI Tool**: Standalone interface for task execution
 
 ## Requirements
 
@@ -37,20 +46,65 @@ The server manages the complete lifecycle:
 
 ## Installation
 
+### Option 1: Standard Installation
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/doryashar/NomadMCP.git
 cd NomadMCP
 ```
 
-2. Install dependencies:
+2. Run the installation script:
+```bash
+./install.sh
+```
+
+Or install manually:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configure the MCP server in your Claude Code settings:
+3. Install CLI tool (optional):
+```bash
+pip install -e .
+```
 
-Add to your MCP settings configuration:
+### Option 2: Docker Installation
+
+```bash
+docker-compose build
+docker-compose up -d
+```
+
+See [docker-README.md](docker-README.md) for detailed Docker instructions.
+
+## Configuration
+
+Configure via environment variables or `config.json`:
+
+```bash
+# Parallel execution
+export NOMAD_MCP_MAX_PARALLEL_TASKS=5
+
+# Use git worktrees (recommended for parallel tasks)
+export NOMAD_MCP_USE_WORKTREES=true
+
+# Task settings
+export NOMAD_MCP_DEFAULT_TIMEOUT=60
+export NOMAD_MCP_BRANCH_PREFIX=task
+
+# Logging
+export NOMAD_MCP_LOG_LEVEL=INFO
+```
+
+Or create `config.json` (see `config.example.json`)
+
+## Usage
+
+### Option 1: MCP Server (via Claude Code)
+
+Configure the MCP server in your Claude Code settings:
+
 ```json
 {
   "mcpServers": {
@@ -63,18 +117,59 @@ Add to your MCP settings configuration:
 }
 ```
 
-## Usage
-
-### MCP Tool: `execute_task`
-
-Execute a coding task in a new branch with automatic PR management.
+Then use the `execute_task` tool:
 
 **Parameters:**
 
 - `task_description` (string, required): Description of the task to complete
-- `working_directory` (string, required): Absolute path to the git repository
+- `working_directory` (string, optional): Absolute path to git repository (defaults to current directory)
 - `branch_name` (string, optional): Custom branch name (auto-generated if not provided)
 - `timeout_minutes` (number, optional): Maximum time to wait for PR merge (default: 60)
+
+### Option 2: CLI Tool (Standalone)
+
+Run tasks directly from the command line:
+
+```bash
+# Single task
+nomad-cli -d "Add dark mode toggle to settings"
+
+# Multiple tasks in parallel
+nomad-cli -d "Add dark mode" -d "Fix login bug" -d "Update docs"
+
+# Tasks from JSON file
+nomad-cli --tasks-file tasks.json
+
+# Specify working directory
+nomad-cli -d "Add feature" --dir /path/to/repo
+
+# Don't open CodeNomad GUI
+nomad-cli -d "Add feature" --no-gui
+```
+
+**Tasks file format** (`tasks.json`):
+
+```json
+[
+  {
+    "id": "task-1",
+    "description": "Add dark mode toggle",
+    "branch_name": "feature/dark-mode",
+    "timeout_minutes": 60
+  },
+  {
+    "id": "task-2",
+    "description": "Fix authentication bug",
+    "working_directory": "/path/to/other/repo"
+  }
+]
+```
+
+The CLI automatically:
+- Opens CodeNomad GUI to show all active sessions
+- Lists server ports for manual connection
+- Runs tasks in parallel (respecting max_parallel_tasks config)
+- Outputs results as JSON (with `--output` flag)
 
 **Example:**
 
@@ -105,11 +200,11 @@ Branch Name: feature/dark-mode
 ### Task Execution Flow
 
 ```
-User → MCP Tool Call → Task Orchestrator
+User → MCP Tool/CLI → Task Queue → Task Orchestrator
   ↓
   1. Git validation (error if not a repo)
-  2. Create new branch
-  3. Spawn OpenCode server
+  2. Create worktree (or branch if worktrees disabled)
+  3. Spawn OpenCode server in worktree directory
   4. Create session via API
   5. Send task prompt
   ↓
@@ -119,7 +214,7 @@ User → MCP Tool Call → Task Orchestrator
   8. Poll PR status every 30s
   ↓
   9. If merged:
-     - Delete branch
+     - Remove worktree/delete branch
      - Close session
      - Kill server
      - Return success
@@ -134,6 +229,46 @@ User → MCP Tool Call → Task Orchestrator
       - Return timeout status
       - Leave PR open for manual review
 ```
+
+### Parallel Execution & Git Worktrees
+
+**Why Worktrees?**
+
+When running multiple tasks in parallel on the same repository, traditional branches can cause conflicts:
+- Can't checkout different branches simultaneously
+- File changes from one task affect others
+- Agents may overwrite each other's work
+
+**Git worktrees** solve this by creating separate working directories:
+```bash
+repo/
+├── .git/
+├── main-code/          # Main worktree
+└── .git/worktrees_nomad/
+    ├── task_abc123/    # Task 1's isolated workspace
+    └── task_def456/    # Task 2's isolated workspace
+```
+
+Each worktree:
+- Has its own branch checked out
+- Has completely separate files
+- Can be worked on simultaneously
+- Shares the same git database
+
+**Configuration:**
+```bash
+# Enable worktrees (default: true)
+export NOMAD_MCP_USE_WORKTREES=true
+
+# Set max parallel tasks
+export NOMAD_MCP_MAX_PARALLEL_TASKS=5
+```
+
+**When to use branches instead:**
+- Single task execution
+- Sequential workflow
+- Simpler mental model
+- Set `NOMAD_MCP_USE_WORKTREES=false`
 
 ### OpenCode vs CodeNomad
 
