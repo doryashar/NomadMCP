@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "nomad-mcp": {
+      "command": "python",
+      "args": ["-m", "src.server"],
+      "cwd": "/path/to/NomadMCP",
+      "env": {}
+    }
+  }
+}
