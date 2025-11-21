@@ -1,0 +1,19 @@
+{
+  "server": {
+    "binary_path": "opencode",
+    "startup_timeout": 10.0,
+    "default_agent": null
+  },
+  "pr": {
+    "poll_interval": 30.0,
+    "feedback_wait_multiplier": 2.0
+  },
+  "task": {
+    "default_timeout_minutes": 60,
+    "branch_prefix": "task"
+  },
+  "logging": {
+    "level": "INFO",
+    "log_file": null
+  }
+}
