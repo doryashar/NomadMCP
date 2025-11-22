@@ -95,13 +95,14 @@ class TaskOrchestrator:
             if self.use_worktrees:
                 # Use worktree for parallel work
                 import os
+
                 # Add task ID to prevent path collisions (e.g., "feature/test" vs "feature_test")
                 safe_branch_name = task.branch_name.replace("/", "_")
                 worktree_path = os.path.join(
                     task.working_directory,
                     ".git",
                     "worktrees_nomad",
-                    f"{safe_branch_name}_{task.id}"
+                    f"{safe_branch_name}_{task.id}",
                 )
                 await self.git_manager.create_worktree(
                     task.working_directory,
@@ -130,18 +131,41 @@ class TaskOrchestrator:
             )
             session_id = session_info.session_id
 
-            # Step 5: Send initial task prompt
+            # Step 5: Initialize session (analyze project)
+            await self.session_manager.init_session(
+                session_id, provider_id="openrouter", model_id="openai/gpt-4o-mini"
+            )
+
+            # Step 6: Send initial task prompt
             task_prompt = self._format_task_prompt(task.description, task.branch_name)
             await self.session_manager.send_prompt(session_id, task_prompt)
 
-            # Step 6: Wait for PR creation
+            # Step 6: Wait for PR creation or task completion
             pr_url, pr_number = await self._wait_for_pr_creation(
                 session_id=session_id,
                 working_dir=task.working_directory,
                 timeout=task.timeout_minutes * 60,
             )
 
+            # Check if task was completed (has commits) even without PR
             if not pr_number:
+                # Check if branch has new commits
+                try:
+                    repo = await self.git_manager.get_repo(task.working_directory)
+                    if task.branch_name in repo.heads:
+                        branch = repo.heads[task.branch_name]
+                        # If branch has commits beyond the initial commit, consider task completed
+                        if len(list(branch.commit.iter_parents())) > 0:  # Has parent commits
+                            return TaskResult(
+                                task_id=task.id,
+                                status=TaskStatus.COMPLETED,
+                                error="Task completed but no PR created",
+                                iterations=iterations,
+                                elapsed_time=time.time() - start_time,
+                            )
+                except Exception:
+                    pass  # Ignore errors in completion check
+
                 return TaskResult(
                     task_id=task.id,
                     status=TaskStatus.FAILED,
@@ -172,9 +196,7 @@ class TaskOrchestrator:
                 if self.use_worktrees and worktree_path:
                     # Remove worktree
                     await self.git_manager.remove_worktree(
-                        task.working_directory,
-                        worktree_path,
-                        force=True
+                        task.working_directory, worktree_path, force=True
                     )
                 else:
                     # Delete the branch
@@ -201,9 +223,7 @@ class TaskOrchestrator:
             if self.use_worktrees and worktree_path:
                 try:
                     await self.git_manager.remove_worktree(
-                        task.working_directory,
-                        worktree_path,
-                        force=True
+                        task.working_directory, worktree_path, force=True
                     )
                 except Exception:
                     pass

@@ -26,7 +26,7 @@ class GitManager:
 
         # Check for potentially dangerous characters
         # Allow: alphanumeric, /, -, _, .
-        if not re.match(r'^[a-zA-Z0-9/_.-]+$', branch_name):
+        if not re.match(r"^[a-zA-Z0-9/_.-]+$", branch_name):
             raise ValueError(
                 f"Invalid branch name: '{branch_name}'. "
                 "Branch names can only contain alphanumeric characters, /, -, _, and ."
@@ -59,7 +59,7 @@ class GitManager:
             raise ValueError("Path cannot be empty")
 
         # Check for shell metacharacters and other dangerous patterns
-        dangerous_chars = [';', '&', '|', '`', '$', '(', ')', '<', '>', '\n', '\r']
+        dangerous_chars = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"]
         for char in dangerous_chars:
             if char in path:
                 raise ValueError(f"Path contains dangerous character: {char}")
@@ -112,7 +112,9 @@ class GitManager:
         return repo.active_branch.name
 
     @staticmethod
-    async def create_branch(directory: str, branch_name: str, from_branch: Optional[str] = None) -> None:
+    async def create_branch(
+        directory: str, branch_name: str, from_branch: Optional[str] = None
+    ) -> None:
         """Create a new branch.
 
         Args:
@@ -238,7 +240,7 @@ class GitManager:
 
         Args:
             directory: Path to main repository
-            branch_name: Name of new branch for worktree
+            branch_name: Name of branch for worktree
             worktree_path: Path where worktree will be created
             from_branch: Base branch (defaults to current branch)
 
@@ -258,13 +260,28 @@ class GitManager:
 
         repo = await GitManager.get_repo(directory)
 
+        # Check if worktree already exists and remove it if it does
+        if await GitManager.worktree_exists(directory, worktree_path):
+            await GitManager.remove_worktree(directory, worktree_path, force=True)
+
+        # Check if branch already exists
+        branch_exists = branch_name in repo.heads
+
         # Build worktree command
         cmd = ["git", "worktree", "add"]
 
-        if from_branch:
-            cmd.extend(["-b", branch_name, worktree_path, from_branch])
+        if branch_exists:
+            # Branch exists, just create worktree pointing to it
+            if from_branch:
+                cmd.extend([worktree_path, from_branch])
+            else:
+                cmd.extend([worktree_path, branch_name])
         else:
-            cmd.extend(["-b", branch_name, worktree_path])
+            # Branch doesn't exist, create it
+            if from_branch:
+                cmd.extend(["-b", branch_name, worktree_path, from_branch])
+            else:
+                cmd.extend(["-b", branch_name, worktree_path])
 
         # Run subprocess in thread pool to avoid blocking event loop
         import asyncio

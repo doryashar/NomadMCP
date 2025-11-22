@@ -27,7 +27,7 @@ class SessionManager:
         """
         timestamp = int(time.time() * 1000)
         random_part = uuid.uuid4().hex[:14]
-        hex_time = format(timestamp, '012x')
+        hex_time = format(timestamp, "012x")
         return f"msg_{hex_time}{random_part}"
 
     async def create_session(
@@ -80,6 +80,45 @@ class SessionManager:
 
         self.sessions[session_id] = session_info
         return session_info
+
+    async def init_session(
+        self,
+        session_id: str,
+        provider_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> None:
+        """Initialize a session.
+
+        Args:
+            session_id: Session ID
+            provider_id: Provider ID (optional)
+            model_id: Model ID (optional)
+
+        Raises:
+            ValueError: If session not found
+            RuntimeError: If init fails
+        """
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        client = self.client_manager.get_client(session.server_port)
+        if not client:
+            raise RuntimeError(f"No client found for session {session_id}")
+
+        # Generate message ID
+        message_id = self._generate_message_id()
+
+        # Init session
+        await client.init_session(
+            session_id=session_id,
+            message_id=message_id,
+            provider_id=provider_id,
+            model_id=model_id,
+        )
+
+        # Update session timestamp
+        session.updated_at = time.time()
 
     async def send_prompt(
         self,

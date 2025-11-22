@@ -28,7 +28,7 @@ class OpenCodeClient:
         path: str,
         json: Optional[dict] = None,
         params: Optional[dict] = None,
-    ) -> dict:
+    ) -> Any:
         """Make an HTTP request.
 
         Args:
@@ -44,9 +44,22 @@ class OpenCodeClient:
             httpx.HTTPError: On HTTP errors
         """
         url = f"{self.base_url}{path}"
-        response = await self.client.request(method, url, json=json, params=params)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = await self.client.request(method, url, json=json, params=params)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            # Include response body in error for debugging
+            if hasattr(e, "response") and e.response:
+                error_detail = e.response.text
+                raise RuntimeError(f"HTTP {e.response.status_code}: {error_detail}") from e
+            raise
+        except httpx.HTTPError as e:
+            # Include response body in error for debugging
+            if hasattr(e, "response") and e.response:
+                error_detail = e.response.text
+                raise RuntimeError(f"HTTP {e.response.status_code}: {error_detail}") from e
+            raise
 
     # Session API
     async def list_sessions(self) -> list[dict]:
@@ -55,8 +68,7 @@ class OpenCodeClient:
         Returns:
             List of session objects
         """
-        response = await self._request("GET", "/session.list")
-        return response.get("data", [])
+        return await self._request("GET", "/session")
 
     async def create_session(self) -> dict:
         """Create a new session.
@@ -64,8 +76,7 @@ class OpenCodeClient:
         Returns:
             Session object with id, title, etc.
         """
-        response = await self._request("POST", "/session.create")
-        return response.get("data", {})
+        return await self._request("POST", "/session")
 
     async def delete_session(self, session_id: str) -> None:
         """Delete a session.
@@ -73,7 +84,7 @@ class OpenCodeClient:
         Args:
             session_id: Session ID to delete
         """
-        await self._request("DELETE", f"/session.delete/{session_id}")
+        await self._request("DELETE", f"/session/{session_id}")
 
     async def get_messages(self, session_id: str) -> list[dict]:
         """Get messages for a session.
@@ -84,8 +95,7 @@ class OpenCodeClient:
         Returns:
             List of message objects
         """
-        response = await self._request("GET", f"/session.messages/{session_id}")
-        return response.get("data", [])
+        return await self._request("GET", f"/session/{session_id}/message")
 
     async def send_prompt(
         self,
@@ -118,8 +128,31 @@ class OpenCodeClient:
         if model:
             body["model"] = model
 
-        response = await self._request("POST", f"/session.prompt/{session_id}", json=body)
+        response = await self._request("POST", f"/session/{session_id}/message", json=body)
         return response
+
+    async def init_session(
+        self,
+        session_id: str,
+        message_id: str,
+        provider_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> None:
+        """Initialize a session by analyzing the project.
+
+        Args:
+            session_id: Session ID
+            message_id: Message ID for the init request
+            provider_id: Provider ID (optional)
+            model_id: Model ID (optional)
+        """
+        body = {"messageID": message_id}
+        if provider_id:
+            body["providerID"] = provider_id
+        if model_id:
+            body["modelID"] = model_id
+
+        await self._request("POST", f"/session/{session_id}/init", json=body)
 
     async def abort_session(self, session_id: str) -> None:
         """Abort a running session.
@@ -127,7 +160,7 @@ class OpenCodeClient:
         Args:
             session_id: Session ID to abort
         """
-        await self._request("POST", f"/session.abort/{session_id}")
+        await self._request("POST", f"/session/{session_id}/abort")
 
     # Config API
     async def get_providers(self) -> dict:
